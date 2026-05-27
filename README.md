@@ -6,9 +6,9 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-green)
 ![Redis](https://img.shields.io/badge/Redis-7.0%2B-red)
 
-**一个为高并发、低延迟场景设计的生产级分布式智能体框架**
+**A production-level distributed agent framework designed for high concurrency and low latency scenarios**
 
-[快速开始](#-快速开始) • [核心特性](#-核心特性) • [架构设计](#-架构设计) • [完整示例](#-完整示例)
+[Quick Start](https://www.google.com/search?q=%23-quick-start) • [Core Features](https://www.google.com/search?q=%23-core-features) • [Architecture](https://www.google.com/search?q=%23-architecture-design) • [Full Example](https://www.google.com/search?q=%23-full-example)
 
 </div>
 

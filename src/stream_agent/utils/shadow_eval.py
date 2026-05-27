@@ -55,7 +55,6 @@ class ShadowEvaluator:
 
         shadow_result = envelope.payload.get("summary", json.dumps(envelope.payload, ensure_ascii=False))
         
-        # UI 渲染
         print("\n" + "="*70)
         print(f" 🧪 [SHADOW EVAL] Shadow Test Real-Time Monitoring Panel ")
         print("="*70)

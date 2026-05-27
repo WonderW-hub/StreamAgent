@@ -102,11 +102,11 @@ class RecoverySweeper:
             else:
 
                 envelope.metadata["retry_count"] = current_retries + 1
-                logger.warning(f"[Recovery] 🔄 正在重投递消息 (第 {current_retries + 1} 次重试)。Trace: {envelope.trace_id} -> {origin_stream}")           
+                logger.warning(f"[Recovery] 🔄 The message is being delivered again (the {current_retries + 1} retry).Trace: {envelope.trace_id} -> {origin_stream}")           
                 await self.redis.xadd(origin_stream, envelope.to_redis_dict(), maxlen=10000, approximate=True)
             await self.redis.xack(origin_stream, origin_group, msg_id)
 
         except Exception as e:
-            logger.error(f"[Sweeper] 处理僵尸消息包极其失败 (包已损坏): {e}")
+            logger.error(f"[Sweeper] Extremely failed to process the zombie message packet (the packet is corrupted): {e}")
 
             await self.redis.xack(origin_stream, origin_group, msg_id)

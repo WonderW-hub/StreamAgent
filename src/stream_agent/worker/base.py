@@ -28,8 +28,7 @@ class WorkerBase(ABC):
         
         # Define the current Agent's listening bus name
         self.stream_name = f"bus:events:{self.agent_name}"
-        
-        # 运行时状态
+
         self.redis: Optional[redis.Redis] = None
         self.is_shadow_mode = False
         self.group_name = f"group_{self.agent_name}"
@@ -117,7 +116,7 @@ class WorkerBase(ABC):
             await self.redis.set(idemp_key, "COMPLETED", ex=3600)
 
         except Exception as e:
-            logger.error(f"[{self.agent_name}] ❌ 处理失败: {e}", exc_info=True)
+            logger.error(f"[{self.agent_name}] ❌ handle_event failed: {e}", exc_info=True)
 
 
     async def _route_reply(self, original_envelope: EventEnvelope, result_payload: Dict[str, Any]):
@@ -126,7 +125,7 @@ class WorkerBase(ABC):
             trace_id=original_envelope.trace_id,
             session_id=original_envelope.session_id,
             source=self.agent_name,
-            target=original_envelope.source, # 默认原路返回给发信人(如 gateway)
+            target=original_envelope.source,
             payload=result_payload,
             is_shadow=original_envelope.is_shadow
         )
@@ -140,7 +139,7 @@ class WorkerBase(ABC):
             maxlen=10000, 
             approximate=True
         )
-        logger.info(f"[{self.agent_name}] 📤 结果已路由至: {target_stream}")
+        logger.info(f"[{self.agent_name}] 📤 result routed to: {target_stream}")
 
     @abstractmethod
     async def handle_event(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:

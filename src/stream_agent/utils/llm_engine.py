@@ -56,7 +56,7 @@ class AsyncLLMEngine:
     async def generate_json(
         self, 
         messages: List[Dict[str, str]], 
-        temperature: float = 0.0,  # JSON 提取必须保证低温度以确保确定性
+        temperature: float = 0.0, 
         max_retries: int = 2
     ) -> Dict[str, Any]:
         """

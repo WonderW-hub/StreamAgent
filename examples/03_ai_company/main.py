@@ -88,8 +88,8 @@ Please answer the user's question based on the latest information retrieved from
         # 🚀 4. Shocking upgrade: Replaced with streaming large model calls!
         reply = await self.llm.generate_stream_to_pubsub(
             messages=messages,
-            trace_id=trace_id,       # 传入钥匙
-            redis_client=self.redis, # 传入网线
+            trace_id=trace_id,      
+            redis_client=self.redis,
         )
         
         # 5. Asynchronous double write and drop disk (silent execution in the background)
@@ -113,11 +113,9 @@ class CoderAgent(WorkerBase):
         session_id = SessionContext.get_session_id()
         trace_id = SessionContext.get_trace_id()
         query = payload.get("query", "")
-        
-        # 1. 记忆系统强制拦截（此处 history 永远是空列表 []）
+
         history = await self.memory.get_history(session_id)
-        
-        # 2. 程序员专属极客 Prompt
+
         system_prompt = (
             "You are a top-tier Python engineer. Please write pure code based on the user's requirements.\n"
             "【Rules】\n"
@@ -224,7 +222,6 @@ class WriterAgent(WorkerBase):
 class TaskDispatcherAgent(Supervisor):
     def __init__(self):
         super().__init__(agent_name="dispatcher")
-        # 这些注册信息，会被 LLMIntentRouter 自动组装成 Prompt
         self.register_agent("researcher", "Call when you need to consult materials, search the knowledge base, and explain concepts")
         self.register_agent("coder", "Call when you need to write code, execute scripts, and fix bugs")
         self.register_agent("writer", "Call when you need to write articles, come up with headlines, and polish text")

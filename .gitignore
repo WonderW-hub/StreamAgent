@@ -20,6 +20,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.wav
 
 # Virtual environments
 venv/
@@ -30,3 +31,4 @@ ENV/
 .idea/
 .vscode/
 *.swp
+

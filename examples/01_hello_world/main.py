@@ -17,13 +17,11 @@ class GreetingAgent(WorkerBase):
         super().__init__(agent_name="greeting_agent")
 
     async def handle_event(self, payload: dict) -> dict:
-        # 演示：优雅地获取被绝对隔离的鉴权与上下文信息！
         current_user = SessionContext.get_session_id()
         trace_id = SessionContext.get_trace_id()
         
         user_query = payload.get("query", "")
         
-        # 模拟大模型思考或工具执行耗时
         await asyncio.sleep(1) 
         
         reply = f"Hello, {current_user}! I am GreetingAgent. I have received your message: '{user_query}'. Task completed successfully! (Trace: {trace_id})"
@@ -50,8 +48,7 @@ class DemoSupervisor(Supervisor):
         target = await self.determine_target(payload)
         if target == self.agent_name:
             return {"summary": "I am the triage desk. Your request is too complex, and I cannot find a suitable Agent to handle it."}
-        
-        # 否则，调用父类的默认逻辑，执行三角路由转发！
+
         return await super().handle_event(payload)
 
 # ==========================================

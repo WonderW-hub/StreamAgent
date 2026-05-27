@@ -1,1 +1,1 @@
-"""统一日志配置 (支持 ELK 格式)"""
+"""Unified log configuration (support ELK format)"""

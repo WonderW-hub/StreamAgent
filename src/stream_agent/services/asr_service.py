@@ -23,7 +23,6 @@ class AsyncASRCallback(RecognitionCallback):
     def on_error(self, result: RecognitionResult) -> None:
         print(f"!!! [ASR Error] {result.message}")
         if not self.future.done():
-            # 即使出错也返回目前识别到的部分，防止死锁
             self.loop.call_soon_threadsafe(self.future.set_result, self.text)
 
 class ASRSession:
@@ -31,8 +30,7 @@ class ASRSession:
         self.loop = asyncio.get_event_loop()
         self.future = self.loop.create_future()
         self.callback = AsyncASRCallback(self.loop, self.future)
-        
-        # 假设前端传过来的是 16kHz 的 16-bit PCM 裸流
+
         self.recognition = Recognition(
             model='fun-asr-realtime',
             format='pcm', 
@@ -42,11 +40,9 @@ class ASRSession:
         self.recognition.start()
 
     def push_audio(self, data: bytes):
-        """推送音频块"""
         self.recognition.send_audio_frame(data)
 
     async def finish(self) -> str:
-        """结束音频推送并等待最终识别结果"""
         self.recognition.stop()
         try:
             text = await self.future
@@ -63,5 +59,4 @@ class ASRService:
         pass
 
     def create_session(self) -> ASRSession:
-        """为每个用户的对话回合创建一个专属 ASR Session"""
         return ASRSession()

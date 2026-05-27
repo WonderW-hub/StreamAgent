@@ -1,4 +1,5 @@
-"""基于 FastAPI 的异步网关基类"""
+# \src\stream_agent\gateway\base.py
+"""Asynchronous gateway base class based on FastAPI"""
 import json
 import uuid
 import asyncio
@@ -13,12 +14,9 @@ from stream_agent.core.envelope import EventEnvelope
 from stream_agent.gateway.future_pool import FuturePool
 from stream_agent.services.asr_service import ASRService
 from stream_agent.services.tts_service import TTSService
-
-# 导入 BaseModel 和全局配置
 from pydantic import BaseModel
 from stream_agent.config.settings import settings
 
-# 定义前端发来的请求体结构
 class ChatRequest(BaseModel):
     query: str
 
@@ -26,56 +24,51 @@ logger = logging.getLogger("StreamAgent.Gateway")
 
 class GatewayServer:
     """
-    工业级异步网关基类。
-    集成了 FastAPI 生命周期管理、Redis 后台监听引擎，以及标准的 HTTP 转 Stream 投递方法。
-    同时支持极致延迟的 WebSocket + Redis Pub/Sub 流式推送。
+    Asynchronous gateway base class.
+    Integrates FastAPI lifecycle management, Redis background listener engine, and standard HTTP to Stream delivery methods.
+    Also supports ultra-low latency WebSocket + Redis Pub/Sub streaming push.
     """
     def __init__(self, title: str = settings.PROJECT_NAME, redis_url: str = settings.REDIS_URL):
         self.redis_url = redis_url
         self.redis: Optional[redis.Redis] = None
         
-        # 1. 初始化核心引擎
+        # 1. Initialize core engines
         self.future_pool = FuturePool()
         self.gateway_stream = "bus:events:gateway"
         self.gateway_group = "group_gateway"
         
-        # 2. 绑定 FastAPI 生命周期
+        # 2. Bind FastAPI lifecycle
         self.app = FastAPI(title=title, lifespan=self._lifespan)
         
-        # 后台监听任务的句柄
+        # Background listener task handle
         self._listener_task: Optional[asyncio.Task] = None
 
-        # 3. 挂载多模态引擎
+        # 3. Mount multimodal engines
         self.asr_service = ASRService()
         self.tts_service = TTSService()
         
-        # 4. 注册所有的 API 和 WebSocket 路由（必须在多模态服务挂载之后调用）
+        # 4. Register all API and WebSocket routes (must be called after multimodal services are mounted)
         self.setup_routes()
 
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):
-        """FastAPI 启动与销毁的钩子"""
-        # --- 启动阶段 ---
+        # --- startup ---
         self.redis = redis.from_url(self.redis_url, decode_responses=True)
         
-        # 在 Redis 中为网关建立独立的消费者组，专门接收大模型回传的结果
+        # Establish an independent consumer group for the gateway in Redis to receive the results returned by the large model
         try:
             await self.redis.xgroup_create(self.gateway_stream, self.gateway_group, id="0", mkstream=True)
         except ResponseError as e:
             if "BUSYGROUP" not in str(e):
                 raise e
                 
-        # 派生后台守护协程，死循环监听回传队列
+        # Derive the background guardian coroutine, and listen to the callback queue in an endless loop
         self._listener_task = asyncio.create_task(self._listen_for_replies())
-        logger.info(f"🚀 网关启动成功！后台已开始监听 {self.gateway_stream}")
-
-        # 初始化 TTS 云端连接
-        self.tts_service.initialize()
-         
-        yield # 交还控制权给 FastAPI
-        
-        # --- 销毁阶段 ---
-        logger.info("🛑 网关正在关闭，清理资源...")
+        logger.info(f"The gateway started successfully!The background has started listening {self.gateway_stream}")     
+        self.tts_service.initialize()         
+        yield 
+       
+        logger.info("The gateway is closing and resources are being cleaned up...")
         if self._listener_task:
             self._listener_task.cancel()
         if self.redis:
@@ -83,7 +76,7 @@ class GatewayServer:
 
     async def _listen_for_replies(self):
         """
-        后台守护进程：像传菜员一样，死死盯着 Redis 回传队列。
+        Background guardian coroutine: Like a waiter, it keeps a close eye on the Redis callback queue.
         """
         try:
             while True:
@@ -103,28 +96,27 @@ class GatewayServer:
                         try:
                             envelope = EventEnvelope.from_redis_dict(msg_data)
                             
-                            # 如果是 WebSocket 的完结回执，直接静默 ACK，不需要唤醒 Future
+                            # If it is the end receipt of the WebSocket, the ACK is directly silent, and there is no need to wake up the future.
                             if envelope.trace_id.startswith("req-ws-"):
-                                logger.debug(f"[Gateway] 收到流式任务 {envelope.trace_id} 的底层完结信号，已静默回收。")
+                                logger.debug(f"[Gateway] Received a streaming task {envelope.trace_id}: The underlying end signal has been silently recovered.")
                                 await self.redis.xack(self.gateway_stream, self.gateway_group, msg_id)
                                 continue
                                 
-                            # 击中内存池，唤醒挂起的 HTTP 协程
+                            # Hit the memory pool to wake up the pending HTTP coroutine
                             self.future_pool.resolve_future(envelope.trace_id, envelope)
                             await self.redis.xack(self.gateway_stream, self.gateway_group, msg_id)
                             
                         except Exception as e:
-                            logger.error(f"解析回传结果失败: {e}")
+                            logger.error(f"Failed to parse returned result: {e}")
                             
         except asyncio.CancelledError:
-            logger.info("监听任务被安全取消。")
+            logger.info("Listening task was safely cancelled.")
 
     def setup_routes(self):
-        """🌟 动态挂载路由体系（路由必须包裹在方法体内以访问 self）"""
+        """Dynamically mount the routing system (the route must be wrapped in the method body to access self)"""
 
-        # 1. 补回传统的 HTTP 同步阻塞接口
         @self.app.post("/v1/chat")
-        async def chat_endpoint(request: ChatRequest, session_id: str = Header(..., description="请求头中的鉴权会话ID")):
+        async def chat_endpoint(request: ChatRequest, session_id: str = Header(..., description="Request header authorization session ID")):
             return await self.dispatch_and_wait(
                 target_agent="dispatcher", 
                 payload={"query": request.query},
@@ -132,12 +124,12 @@ class GatewayServer:
                 timeout=60.0
             )
 
-        # 2. 挂载流式多模态双协程全双工 WebSocket
+
         @self.app.websocket("/v1/ws/chat")
         async def websocket_chat(
             websocket: WebSocket,
-            session_id: str = Query(..., description="URL参数中的用户会话ID"),
-            authorization: Optional[str] = Query(None, description="URL参数中的鉴权Token")
+            session_id: str = Query(..., description="User session ID in URL parameter"),
+            authorization: Optional[str] = Query(None, description="URL parameter for authorization token")
         ):
             if not session_id:
                 await websocket.close(code=1008, reason="Missing session_id")
@@ -151,7 +143,7 @@ class GatewayServer:
             try:
                 await pubsub.subscribe(pubsub_channel)
             except Exception as e:
-                logger.error(f"🚨 Redis 订阅失败，强行终止: {e}")
+                logger.error(f"🚨 Redis subscription failed, forcefully terminating: {e}")
                 await websocket.close(code=1011)
                 return
             
@@ -159,10 +151,9 @@ class GatewayServer:
             tts_queue = asyncio.Queue()
             ws_lock = asyncio.Lock()
 
-            # 🌟 新增：动态 TTS 开关，默认开启以兼容硬件外设
             enable_tts = True
 
-            # 🚀 协程 1：收件员
+
             async def receive_loop():
                 nonlocal asr_session, enable_tts
                 try:
@@ -176,20 +167,20 @@ class GatewayServer:
                             data = json.loads(message["text"])
                             action = data.get("action", "chat")
                             
-                            # 🌟 核心拦截：读取客户端配置的 require_audio 参数
+
                             enable_tts = data.get("require_audio", True)
                             
                             if action == "start_audio":
-                                logger.info(f"🎤 [{session_id}] 开启麦克风，初始化 ASR...")
+                                logger.info(f"🎤 [{session_id}] Starting microphone, initializing ASR...")
                                 asr_session = self.asr_service.create_session()
                             elif action == "stop_audio":
                                 if asr_session:
-                                    logger.info(f"🛑 [{session_id}] 停止说话，等待 ASR 最终结果...")
+                                    logger.info(f"🛑 [{session_id}] Stopping speech, waiting for ASR final result...")
                                     text_result = await asr_session.finish()
                                     asr_session = None
                                     
                                     if text_result:
-                                        logger.info(f"📝 [{session_id}] ASR 识别完毕: {text_result}")
+                                        logger.info(f"📝 [{session_id}] ASR completed: {text_result}")
                                         envelope = EventEnvelope(
                                             trace_id=trace_id, session_id=session_id,
                                             auth_token=authorization, source="gateway", target="dispatcher",
@@ -199,7 +190,7 @@ class GatewayServer:
                                         
                             elif action == "chat":
                                 query = data.get("query", "")
-                                logger.info(f"💬 [{session_id}] 网关收到前端纯文本指令: '{query}' (TTS开启状态: {enable_tts})")
+                                logger.info(f"💬 [{session_id}] The gateway receives the front-end plain text command:'{query}' (TTS is on: {enable_tts})")
                                 
                                 envelope = EventEnvelope(
                                     trace_id=trace_id, session_id=session_id,
@@ -209,19 +200,19 @@ class GatewayServer:
                                 try:
                                     await self.redis.xadd("bus:events:dispatcher", envelope.to_redis_dict())
                                 except Exception as e:
-                                    logger.error(f"🚨 任务投递 Redis 失败: {e}")
+                                    logger.error(f"🚨 Fatal error in task delivery to Redis: {e}")
 
                         elif "bytes" in message:
                             if asr_session:
                                 asr_session.push_audio(message["bytes"])
                 except WebSocketDisconnect:
-                    logger.debug(f"[Gateway] [{session_id}] 客户端正常断开。")
+                    logger.debug(f"[Gateway] [{session_id}] Client disconnected normally.")
                     await tts_queue.put(None)
                 except Exception as e:
-                    logger.error(f"🚨 接收通道致命错误: {str(e)}", exc_info=True)
+                    logger.error(f"🚨 Fatal error in receive channel: {str(e)}", exc_info=True)
                     await tts_queue.put(None)
 
-            # 🚀 协程 2：打字员
+
             async def text_loop():
                 sentence_buffer = ""
                 punctuation = set("。！？；.!?;")
@@ -231,7 +222,7 @@ class GatewayServer:
                             token = message["data"]
                             try:
                                 if token == "[DONE]":
-                                    # 🌟 只有开启 TTS 时，才把最后一句话扔进语音队列
+
                                     if sentence_buffer.strip() and enable_tts:
                                         await tts_queue.put(sentence_buffer.strip())
                                     await tts_queue.put(None) 
@@ -248,16 +239,15 @@ class GatewayServer:
                             if any(p in token for p in punctuation):
                                 sentence_to_speak = sentence_buffer.strip()
                                 sentence_buffer = ""
-                                # 🌟 只有开启 TTS 时，才触发后台语音合成
+
                                 if sentence_to_speak and enable_tts:
                                     await tts_queue.put(sentence_to_speak)
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
-                    logger.error(f"🚨 文本通道致命错误: {str(e)}", exc_info=True)
+                    logger.error(f"🚨 Fatal text channel error: {str(e)}", exc_info=True)
                     await tts_queue.put(None)
 
-            # 🚀 协程 3：播音员 (无需任何修改，完美兼容)
             async def audio_loop():
                 try:
                     while True:
@@ -266,12 +256,12 @@ class GatewayServer:
                             try:
                                 async with ws_lock:
                                     await websocket.send_text("[DONE]")
-                                logger.info(f"✅ [{session_id}] 音频流下发完毕 (或被客户端跳过)，正常结束对话。")
+                                logger.info(f"✅ [{session_id}] Audio stream has been sent (or skipped by client), ending conversation normally.")
                             except Exception:
                                 pass
                             break 
                             
-                        logger.debug(f"🎵 触发后台 TTS 合成: {sentence}")
+                        logger.debug(f"🎵 Triggering background TTS synthesis: {sentence}")
                         async for audio_chunk, _ in self.tts_service.stream_audio_generator(sentence):
                             try:
                                 async with ws_lock:
@@ -281,14 +271,14 @@ class GatewayServer:
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
-                    logger.error(f"🚨 音频通道致命错误: {str(e)}", exc_info=True)
+                    logger.error(f"🚨 Fatal audio channel error: {str(e)}", exc_info=True)
 
             try:
                 await asyncio.gather(receive_loop(), text_loop(), audio_loop())
             except WebSocketDisconnect:
-                logger.warning(f"[Gateway] 用户 {session_id} 的 WS 异常断开。")
+                logger.warning(f"[Gateway] User {session_id} has disconnected unexpectedly.")
             except Exception as e:
-                logger.error(f"🚨 WebSocket 核心路由崩溃: {str(e)}", exc_info=True)
+                logger.error(f"🚨 WebSocket Core routing crash: {str(e)}", exc_info=True)
             finally:
                 if asr_session:
                     await asr_session.finish() 
@@ -304,7 +294,7 @@ class GatewayServer:
         is_shadow: bool = False
     ) -> Dict[str, Any]:
         """
-        供 API 路由调用的核心方法：打包、投递、挂起、等待、解包。
+        The core methods for API routing calls: packaging, delivery, suspending, waiting, and unpacking.
         """
         envelope = EventEnvelope(
             session_id=session_id,
@@ -320,15 +310,15 @@ class GatewayServer:
         
         try:
             await self.redis.xadd(target_stream, envelope.to_redis_dict(), maxlen=10000, approximate=True)
-            logger.info(f"📤 任务 {envelope.trace_id} 已投递至 {target_stream}")
+            logger.info(f"📤 Task {envelope.trace_id} has been dispatched to {target_stream}")
             
             result_envelope: EventEnvelope = await asyncio.wait_for(future, timeout=timeout)
             return result_envelope.payload
             
         except asyncio.TimeoutError:
             self.future_pool.remove_future(envelope.trace_id)
-            logger.error(f"⏳ 请求超时，后端 Agent 未在 {timeout}s 内响应 (Trace: {envelope.trace_id})")
-            raise HTTPException(status_code=504, detail="Gateway Timeout: 后端智能体处理超时")
+            logger.error(f"⏳ The request timed out, and the backend agent did not respond within {timeout}s (Trace: {envelope.trace_id})")
+            raise HTTPException(status_code=504, detail="Gateway Timeout: Back-end agent processing timeout")
         except Exception as e:
             self.future_pool.remove_future(envelope.trace_id)
             raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")

@@ -18,13 +18,13 @@ x-agent-base: &agent-base
       condition: service_healthy
 
 services:
-  # 🧠 1. 分布式消息总线 (Redis)
+  
   redis:
     image: redis:7-alpine
     container_name: stream_agent_redis
     ports:
       - "6379:6379"
-    # 开启 AOF 持久化，防止宕机导致 PEL 队列中的任务丢失
+ 
     command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -32,7 +32,7 @@ services:
       timeout: 3s
       retries: 5
 
-  # 🌐 2. 多模态流式网关 (Gateway)
+
   gateway:
     <<: *agent-base
     container_name: stream_agent_gateway
@@ -41,27 +41,23 @@ services:
     ports:
       - "8000:8000"
 
-  # 🎯 3. 总控路由大脑 (Dispatcher)
+
   dispatcher:
     <<: *agent-base
     container_name: stream_agent_dispatcher
-    # 假设你为每个 Agent 编写了独立的启动入口
+
     command: ["scripts/run_dispatcher.py"]
 
-  # ✍️ 4. 文案策划集群 (Writer) - ✨ 动态扩缩容展示
   writer_agent:
     <<: *agent-base
     command: ["scripts/run_writer.py"]
     deploy:
       mode: replicated
-      replicas: 3 # 🔥 一键拉起 3 个 Writer 实例去瓜分 bus:events:writer 队列的任务！
+      replicas: 3 
 
-  # 💻 5. 高级程序员 (Coder) - ✨ 带 Docker 嵌套权限
   coder_agent:
     <<: *agent-base
     container_name: stream_agent_coder
     command: ["scripts/run_coder.py"]
     volumes:
-      # 将宿主机的 Docker 进程挂载进容器 (Docker-out-of-Docker)
-      # 这样 CoderAgent 就能在代码里调包拉起隔离沙盒了！
       - /var/run/docker.sock:/var/run/docker.sock

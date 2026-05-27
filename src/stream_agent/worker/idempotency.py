@@ -1,1 +1,1 @@
-"""基于 Redis Trace ID 的防重拦截锁"""
+"""Anti-heavy interception lock based on Redis Trace ID"""

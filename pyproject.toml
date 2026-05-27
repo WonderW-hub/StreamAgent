@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stream-agent"
+version = "0.1.0"
+authors = [
+  { name="Your Name", email="your.email@example.com" },
+]
+description = "The first production-ready, event-driven Agent framework for high-concurrency environments."
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "redis>=5.0.0",
+    "fastapi>=0.100.0",
+    "pydantic>=2.0.0",
+    "uvicorn>=0.23.0",
+    "jieba>=0.42.1",
+    "nltk>=3.8.1",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/yourusername/StreamAgent"
+"Bug Tracker" = "https://github.com/yourusername/StreamAgent/issues"

@@ -338,7 +338,7 @@ StreamAgent/
 
 欢迎提交 Issue、Pull Request 或功能建议！
 
-- 📧 Email: [your-email@example.com]
+- 📧 Email: [wonderingwhy2008@gmail.com]
 - 💬 讨论区: GitHub Discussions
 - 🐛 Issue Tracker: GitHub Issues
 

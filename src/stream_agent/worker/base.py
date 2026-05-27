@@ -34,6 +34,29 @@ class WorkerBase(ABC):
         self.group_name = f"group_{self.agent_name}"
         self.consumer_name = f"worker_{self.version}"
 
+    async def _heartbeat_loop(self):
+        """
+        [Background guardian coroutine] Maintain the survival state of the agent in the system
+        """
+        heartbeat_key = f"heartbeat:{self.agent_name}"
+        try:
+            while True:
+                # 1. Add yourself to the system's "active roster”
+                await self.redis.sadd("system:active_agents", self.agent_name)
+                
+                # 2. Set a 15-second expiration time (TTL) for your own heartbeat button
+                # If the process crashes, this key will automatically disappear after 15 seconds
+                await self.redis.set(heartbeat_key, "alive", ex=15)
+                
+                # 3. Rest for 5 seconds before the next heartbeat
+                await asyncio.sleep(5)
+                
+        except asyncio.CancelledError:
+            # Triggered when the coroutine is actively cancelled (graceful shutdown)
+            logger.info(f"[{self.agent_name}] 心跳守护协程已停止。")
+        except Exception as e:
+            logger.error(f"[{self.agent_name}] 心跳服务异常: {e}")
+
     async def setup(self):
         """Initialize Redis connection and create consumer group"""
         self.redis = redis.from_url(self.redis_url, decode_responses=True)
@@ -56,6 +79,7 @@ class WorkerBase(ABC):
         
         mode_str = "🟢 Shadow Evaluation Mode" if is_shadow else "🚀 Production Processing Mode"
         logger.info(f"[{self.agent_name}] {self.version} started ({mode_str}) | Listening: {self.stream_name}")
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop()) #heartbeat
 
         try:
             while True:
@@ -80,6 +104,25 @@ class WorkerBase(ABC):
             if self.redis:
                 await self.redis.aclose()
 
+    async def stop(self):
+        """
+        [Elegant shutdown] Actively log out to prevent becoming a ghost node
+        """
+        logger.info(f"🛑 ready to stop Agent: {self.agent_name}...")
+        
+        # 1. stop heartbeat
+        if hasattr(self, '_heartbeat_task') and self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            
+        heartbeat_key = f"heartbeat:{self.agent_name}"
+        try:
+            # 2. Actively delete yourself from the active roster
+            await self.redis.srem("system:active_agents", self.agent_name)
+            # 3. Delete the exclusive heartbeat button immediately
+            await self.redis.delete(heartbeat_key)
+            logger.info(f"[{self.agent_name}] 已成功从注册中心注销 👋")
+        except Exception as e:
+            logger.error(f"[{self.agent_name}] 注销时发生异常: {e}")
     async def _process_raw_message(self, message_id: str, msg_data: Dict[str, str]):
         """Core processing pipeline: unpacking -> authentication -> execution -> reply -> ACK"""
         try:

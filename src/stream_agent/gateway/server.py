@@ -1,4 +1,4 @@
-# \src\stream_agent\gateway\base.py
+# src/stream_agent/gateway/server.py
 """Asynchronous gateway base class based on FastAPI"""
 import json
 import uuid
@@ -16,6 +16,7 @@ from stream_agent.services.asr_service import ASRService
 from stream_agent.services.tts_service import TTSService
 from pydantic import BaseModel
 from stream_agent.config.settings import settings
+from stream_agent.worker.sandbox import CodeSandbox
 
 class ChatRequest(BaseModel):
     query: str
@@ -34,7 +35,12 @@ class GatewayServer:
         
         # 1. Initialize core engines
         self.future_pool = FuturePool()
-        self.gateway_stream = "bus:events:gateway"
+        
+        # [FIX] Generate a globally unique instance ID for horizontal scaling.
+        # This solves the "routing loss" issue when multiple gateway instances are deployed.
+        self.instance_id = str(uuid.uuid4())
+        self.source_name = f"gateway:{self.instance_id}"
+        self.return_stream = f"bus:events:{self.source_name}"
         self.gateway_group = "group_gateway"
         
         # 2. Bind FastAPI lifecycle
@@ -47,7 +53,7 @@ class GatewayServer:
         self.asr_service = ASRService()
         self.tts_service = TTSService()
         
-        # 4. Register all API and WebSocket routes (must be called after multimodal services are mounted)
+        # 4. Register all API and WebSocket routes
         self.setup_routes()
 
     @asynccontextmanager
@@ -55,20 +61,21 @@ class GatewayServer:
         # --- startup ---
         self.redis = redis.from_url(self.redis_url, decode_responses=True)
         
-        # Establish an independent consumer group for the gateway in Redis to receive the results returned by the large model
+        # Establish an independent consumer group for the gateway in Redis using the instance-specific return stream
         try:
-            await self.redis.xgroup_create(self.gateway_stream, self.gateway_group, id="0", mkstream=True)
+            await self.redis.xgroup_create(self.return_stream, self.gateway_group, id="0", mkstream=True)
         except ResponseError as e:
             if "BUSYGROUP" not in str(e):
                 raise e
                 
         # Derive the background guardian coroutine, and listen to the callback queue in an endless loop
         self._listener_task = asyncio.create_task(self._listen_for_replies())
-        logger.info(f"The gateway started successfully!The background has started listening {self.gateway_stream}")     
+        logger.info(f"Gateway started successfully! Background listening on {self.return_stream} (Instance: {self.instance_id})")     
         self.tts_service.initialize()         
         yield 
        
-        logger.info("The gateway is closing and resources are being cleaned up...")
+        # --- shutdown ---
+        logger.info("Gateway is closing and resources are being cleaned up...")
         if self._listener_task:
             self._listener_task.cancel()
         if self.redis:
@@ -76,14 +83,14 @@ class GatewayServer:
 
     async def _listen_for_replies(self):
         """
-        Background guardian coroutine: Like a waiter, it keeps a close eye on the Redis callback queue.
+        Background guardian coroutine: Keeps a close eye on the instance-specific Redis callback queue.
         """
         try:
             while True:
                 messages = await self.redis.xreadgroup(
                     groupname=self.gateway_group,
-                    consumername="gateway_worker_1",
-                    streams={self.gateway_stream: ">"},
+                    consumername=self.instance_id,
+                    streams={self.return_stream: ">"},
                     count=10,
                     block=1000
                 )
@@ -96,15 +103,15 @@ class GatewayServer:
                         try:
                             envelope = EventEnvelope.from_redis_dict(msg_data)
                             
-                            # If it is the end receipt of the WebSocket, the ACK is directly silent, and there is no need to wake up the future.
+                            # If it is the end receipt of the WebSocket, ACK directly, no need to wake up future.
                             if envelope.trace_id.startswith("req-ws-"):
-                                logger.debug(f"[Gateway] Received a streaming task {envelope.trace_id}: The underlying end signal has been silently recovered.")
-                                await self.redis.xack(self.gateway_stream, self.gateway_group, msg_id)
+                                logger.debug(f"[Gateway] Received streaming task {envelope.trace_id}: Underlying end signal recovered.")
+                                await self.redis.xack(self.return_stream, self.gateway_group, msg_id)
                                 continue
                                 
                             # Hit the memory pool to wake up the pending HTTP coroutine
                             self.future_pool.resolve_future(envelope.trace_id, envelope)
-                            await self.redis.xack(self.gateway_stream, self.gateway_group, msg_id)
+                            await self.redis.xack(self.return_stream, self.gateway_group, msg_id)
                             
                         except Exception as e:
                             logger.error(f"Failed to parse returned result: {e}")
@@ -113,26 +120,23 @@ class GatewayServer:
             logger.info("Listening task was safely cancelled.")
 
     def setup_routes(self):
-        """Dynamically mount the routing system (the route must be wrapped in the method body to access self)"""
+        """Dynamically mount the routing system"""
 
         @self.app.post("/v1/chat")
         async def chat_endpoint(
             request: ChatRequest, 
             session_id: str = Header(..., description="Request header authorization session ID"),
-            # 1. 【新增】拦截 Authorization 请求头
             authorization: str = Header(default=None, description="Bearer Token for auth") 
         ):
             return await self.dispatch_and_wait(
                 target_agent="dispatcher", 
                 payload={
                     "query": request.query,
-                    # 2. 【新增】将拦截到的 token 塞进 payload 透传给下游的 Agent
                     "auth_token": authorization 
                 },
                 session_id=session_id,
                 timeout=60.0
             )
-
 
         @self.app.websocket("/v1/ws/chat")
         async def websocket_chat(
@@ -159,9 +163,7 @@ class GatewayServer:
             asr_session = None
             tts_queue = asyncio.Queue()
             ws_lock = asyncio.Lock()
-
             enable_tts = True
-
 
             async def receive_loop():
                 nonlocal asr_session, enable_tts
@@ -175,8 +177,6 @@ class GatewayServer:
                         if "text" in message:
                             data = json.loads(message["text"])
                             action = data.get("action", "chat")
-                            
-
                             enable_tts = data.get("require_audio", True)
                             
                             if action == "start_audio":
@@ -192,18 +192,18 @@ class GatewayServer:
                                         logger.info(f"📝 [{session_id}] ASR completed: {text_result}")
                                         envelope = EventEnvelope(
                                             trace_id=trace_id, session_id=session_id,
-                                            auth_token=authorization, source="gateway", target="dispatcher",
+                                            auth_token=authorization, source=self.source_name, target="dispatcher",
                                             action="process", payload={"query": text_result}
                                         )
                                         await self.redis.xadd("bus:events:dispatcher", envelope.to_redis_dict())
                                         
                             elif action == "chat":
                                 query = data.get("query", "")
-                                logger.info(f"💬 [{session_id}] The gateway receives the front-end plain text command:'{query}' (TTS is on: {enable_tts})")
+                                logger.info(f"💬 [{session_id}] Gateway received frontend text: '{query}' (TTS: {enable_tts})")
                                 
                                 envelope = EventEnvelope(
                                     trace_id=trace_id, session_id=session_id,
-                                    auth_token=authorization, source="gateway", target="dispatcher",
+                                    auth_token=authorization, source=self.source_name, target="dispatcher",
                                     action="process", payload={"query": query}
                                 )
                                 try:
@@ -221,7 +221,6 @@ class GatewayServer:
                     logger.error(f"🚨 Fatal error in receive channel: {str(e)}", exc_info=True)
                     await tts_queue.put(None)
 
-
             async def text_loop():
                 sentence_buffer = ""
                 punctuation = set("。！？；.!?;")
@@ -231,7 +230,6 @@ class GatewayServer:
                             token = message["data"]
                             try:
                                 if token == "[DONE]":
-
                                     if sentence_buffer.strip() and enable_tts:
                                         await tts_queue.put(sentence_buffer.strip())
                                     await tts_queue.put(None) 
@@ -265,7 +263,7 @@ class GatewayServer:
                             try:
                                 async with ws_lock:
                                     await websocket.send_text("[DONE]")
-                                logger.info(f"✅ [{session_id}] Audio stream has been sent (or skipped by client), ending conversation normally.")
+                                logger.info(f"✅ [{session_id}] Audio stream completed, ending conversation normally.")
                             except Exception:
                                 pass
                             break 
@@ -285,9 +283,9 @@ class GatewayServer:
             try:
                 await asyncio.gather(receive_loop(), text_loop(), audio_loop())
             except WebSocketDisconnect:
-                logger.warning(f"[Gateway] User {session_id} has disconnected unexpectedly.")
+                logger.warning(f"[Gateway] User {session_id} disconnected unexpectedly.")
             except Exception as e:
-                logger.error(f"🚨 WebSocket Core routing crash: {str(e)}", exc_info=True)
+                logger.error(f"🚨 WebSocket routing crash: {str(e)}", exc_info=True)
             finally:
                 if asr_session:
                     await asr_session.finish() 
@@ -303,12 +301,12 @@ class GatewayServer:
         is_shadow: bool = False
     ) -> Dict[str, Any]:
         """
-        The core methods for API routing calls: packaging, delivery, suspending, waiting, and unpacking.
+        Core methods for API routing calls: packaging, delivery, suspending, waiting, and unpacking.
         """
         envelope = EventEnvelope(
             session_id=session_id,
             auth_token=auth_token,
-            source="gateway",
+            source=self.source_name,  # [FIX] Use instance-specific stream as return address
             target=target_agent,
             payload=payload,
             is_shadow=is_shadow
@@ -319,15 +317,24 @@ class GatewayServer:
         
         try:
             await self.redis.xadd(target_stream, envelope.to_redis_dict(), maxlen=10000, approximate=True)
-            logger.info(f"📤 Task {envelope.trace_id} has been dispatched to {target_stream}")
+            logger.info(f"📤 Task {envelope.trace_id} dispatched to {target_stream}")
             
+            # [FIX] Introduce hard timeout to prevent memory leak/OOM caused by pending futures
             result_envelope: EventEnvelope = await asyncio.wait_for(future, timeout=timeout)
             return result_envelope.payload
             
         except asyncio.TimeoutError:
             self.future_pool.remove_future(envelope.trace_id)
-            logger.error(f"⏳ The request timed out, and the backend agent did not respond within {timeout}s (Trace: {envelope.trace_id})")
-            raise HTTPException(status_code=504, detail="Gateway Timeout: Back-end agent processing timeout")
+            logger.error(f"⏳ Request timed out. Backend agent did not respond within {timeout}s (Trace: {envelope.trace_id})")
+            try:
+                sandbox_key = f"trace_sandbox:{envelope.trace_id}"
+                sandbox_id = await self.redis.get(sandbox_key)
+                if sandbox_id:
+                    asyncio.create_task(CodeSandbox.destroy_sandbox(sandbox_id))
+                    await self.redis.delete(sandbox_key)
+            except Exception:
+                pass
+            raise HTTPException(status_code=504, detail="Gateway Timeout: Backend agent processing timeout")
         except Exception as e:
             self.future_pool.remove_future(envelope.trace_id)
             raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")

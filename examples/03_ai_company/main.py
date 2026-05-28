@@ -19,6 +19,8 @@ from stream_agent.utils.llm_engine import AsyncLLMEngine
 from stream_agent.config.settings import settings
 from stream_agent.worker.sandbox import CodeSandbox
 from stream_agent.agents.planner import PlannerAgent
+from stream_agent.agents.writer import WriterAgent
+from stream_agent.agents.coder import CoderAgent
 import logging
 
 logging.basicConfig(
@@ -101,135 +103,6 @@ Please answer the user's question based on the latest information retrieved from
         return {"summary": "Streaming output is complete", "agent": self.agent_name}
 
 # ==========================================
-# Agent 2: Coder (upgraded to streaming output + real EVU sandbox isolation)
-# ==========================================
-class CoderAgent(WorkerBase):
-    def __init__(self):
-        # Inherit from WorkerBase, automatically listen to bus:events:coder
-        super().__init__(agent_name="coder")  
-        self.memory = ZeroHistoryPlugin()
-        self.sandbox = CodeSandbox(timeout=3.0)
-        self.llm = AsyncLLMEngine()
-
-    async def handle_event(self, payload: dict) -> dict:
-        session_id = SessionContext.get_session_id()
-        trace_id = SessionContext.get_trace_id()
-        instruction = payload.get("instruction") or payload.get("query", "")
-        previous_context = payload.get("previous_context", "")
-        
-        query = instruction
-        if previous_context:
-            query += f"\n\n【Contextual information from the previous step】：\n{previous_context}"
-        history = await self.memory.get_history(session_id)
-
-        system_prompt = (
-            "You are a top-tier Python engineer. Please write pure code based on the user's requirements.\n"
-            "【Rules】\n"
-            "Only output Python code, and Try not to include explanatory text.\n"
-            "Be sure to use print() to print out the result, otherwise the sandbox cannot capture the result。"
-            "Extremely important: when performing any file read and write operations, you must explicitly specify the encoding='set-8' parameter in the open() function!"
-        )
-        messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": query}]
-
-        logging.info(f"[{self.agent_name}] Code is being conceived and streamed to the front end...")
-        
-        # 🚀 3. Stream generation!The process of writing code for the large model will be pushed to the Gateway in real time
-        generated_code = await self.llm.generate_stream_to_pubsub(
-            messages=messages,
-            trace_id=trace_id,       
-            redis_client=self.redis, 
-        )
-      
-        clean_code = self._clean_markdown(generated_code)
-        logging.info(f"[{self.agent_name}] Code generation complete,Put into the EVU sandbox for execution...")
-        is_success, execution_result = await self.sandbox.execute(clean_code)
-        
-        if is_success:
-            reply_summary = f"✅ The code was executed successfully!\n sandbox output:\n{execution_result}"
-            logging.info(f"[{self.agent_name}] The execution was successful!output: {execution_result}")
-        else:
-            reply_summary = f"❌ The code execution failed!\nError tracking:\n{execution_result}"
-            logging.error(f"[{self.agent_name}] Execution error: {execution_result}")
-
-        await self.memory.save_message(session_id, "user", query)
-        await self.memory.save_message(session_id, "assistant", f"```python\n{clean_code}\n```\n{reply_summary}")
-        
-        return {
-            "summary": reply_summary, 
-            "agent": self.agent_name,
-            "code": clean_code,
-            "result": execution_result
-        }
-
-    def _clean_markdown(self, text: str) -> str:
-        lines = text.split("\n")
-        code_lines = []
-        in_code_block = False
-        
-        if not any(line.strip().startswith("```") for line in lines):
-            return text.strip()
-
-        for line in lines:
-            if line.strip().startswith("```"):
-                in_code_block = not in_code_block
-                continue
-            if in_code_block:
-                code_lines.append(line)
-        return "\n".join(code_lines).strip()
-
-# ==========================================
-# Agent 3:  Copywriting planning (streaming output)
-# ==========================================
-class WriterAgent(WorkerBase):
-    def __init__(self):
-        super().__init__(agent_name="writer")
-        self.memory = LayeredMemoryManager(
-            agent_name=self.agent_name, 
-            l1_max_len=10
-        ) 
-        self.llm = AsyncLLMEngine()
-
-    async def handle_event(self, payload: dict) -> dict:
-        session_id = SessionContext.get_session_id()
-        trace_id = SessionContext.get_trace_id() 
-        instruction = payload.get("instruction") or payload.get("query", "")
-        previous_context = payload.get("previous_context", "")
-        
-        query = instruction
-        if previous_context:
-            query += f"\n\n【Please be sure to copywriter based on the content provided below】：\n{previous_context}"
-        
-        logging.info(f"[{self.agent_name}] Received copywriting task，TraceID: {trace_id}")
-
-        try:          
-            history = await self.memory.get_history(session_id, limit=10)
-            system_prompt = "You are a top new media copywriter.The language style is very inflammatory.Your task is to explode the title and polish the article。"
-            messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": query}]       
-            logging.info(f"[{self.agent_name}] Started to conceive explosive copywriting, and it is in the flow...")
-    
-            reply = await self.llm.generate_stream_to_pubsub(
-                messages=messages,
-                trace_id=trace_id,      
-                redis_client=self.redis, 
-            )
-            
-            await self.memory.save_message(session_id, "user", query)
-            await self.memory.save_message(session_id, "assistant", reply)
-            
-            logging.info(f"[{self.agent_name}] ✅ Copywriting generation and streaming successfully concluded。")
-            return {"summary": "Streaming output has been completed", "agent": self.agent_name, "result": reply,}
-            
-        except Exception as e:
-            error_msg = f"System error occurred: {str(e)}"
-            logging.error(f"[{self.agent_name}] Fatal error: {error_msg}", exc_info=True)
-            
-            if self.redis:
-                pubsub_channel = f"channel:stream:{trace_id}"
-                await self.redis.publish(pubsub_channel, f"\n\n[Writer node crashed: {error_msg}]")
-                await self.redis.publish(pubsub_channel, "[DONE]")
-                
-            return {"summary": "Generation failed", "agent": self.agent_name, "status": "error"}
-# ==========================================
 # Task Dispatcher Agent
 # ==========================================
 class TaskDispatcherAgent(Supervisor):
@@ -241,7 +114,7 @@ class TaskDispatcherAgent(Supervisor):
 
         self.register_agent(
             "planner_agent", 
-            "【高级调度】当用户的需求是一个包含多个步骤的复杂目标，需要多个Agent接力协作才能完成时（例如：先获取文件内容，然后根据内容写文章；或者先查资料再写代码），必须将任务转发给该 Agent 进行流水线规划。"
+            "[Advanced scheduling] When the user's needs are a complex goal that contains multiple steps, and multiple agents are required to collaborate to complete it (for example: first obtain the content of the file, and then write an article based on the content; or check the information first and then write the code), the task must be forwarded to the agent for pipeline planning.。"
         )
 
 # ==========================================

@@ -93,11 +93,6 @@ class PlannerAgent(WorkerBase):
         # 5. Distribute the first task
         first_task = tasks[0]
         await self.dispatch_step(first_task, session_id, trace_id, auth_token, pipeline_key)
-
-        # ===================================================================
-        # 【核心修改】直接返回 None，阻止 WorkerBase 向 Gateway 发送提前结束的 ACK 回执。
-        # 真正的最终结果将由最后一棒（比如 WriterAgent）触发 _advance_pipeline 里的回传逻辑来完成。
-        # ===================================================================
         return None
 
     def _validate_token(self, token: str) -> bool:
@@ -113,7 +108,7 @@ class PlannerAgent(WorkerBase):
             "trace_id": trace_id,
             "session_id": session_id,
             "auth_token": auth_token,
-            "source": self.agent_name,
+            "source": SessionContext.get_source(), 
             "target": task["agent_type"],
             "payload": json.dumps({
                 "instruction": task["instruction"], 

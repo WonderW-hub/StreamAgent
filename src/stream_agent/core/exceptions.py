@@ -57,7 +57,7 @@ class RoutingError(StreamAgentError):
 
 
 # ==========================================
-# 2. 服务端与基建类异常 (5xx)
+# 2. Server-side and infrastructure exceptions (5xx)
 # ==========================================
 
 class ContextError(StreamAgentError):

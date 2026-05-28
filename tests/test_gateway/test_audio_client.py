@@ -50,7 +50,7 @@ async def send_audio_and_receive(ws, audio_chunks):
                 collected_pcm_data.extend(response)
             else:
                 if response == "[DONE]":
-                    print("\n\n[MCU] ✅ 服务器宣告流式交互彻底结束。")
+                    print("\n\n[MCU] ✅ The server declares that the streaming interaction is completely over.")
                     break
                 else:
                     print(response, end="", flush=True)

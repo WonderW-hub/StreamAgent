@@ -53,7 +53,7 @@ class Supervisor(WorkerBase):
             session_id=SessionContext.get_session_id(),
             auth_token=SessionContext.get_auth_token(),
             is_shadow=SessionContext.is_shadow_mode(),
-            source="gateway", 
+            source=SessionContext.get_source(),
             target=target_agent,
             action="process",
             payload=payload

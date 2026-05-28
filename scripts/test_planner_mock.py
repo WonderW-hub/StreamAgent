@@ -16,7 +16,7 @@ async def inject_test_task():
         "source": "gateway",
         "target": "planner_agent",
         "payload": json.dumps({
-            "goal": "我想要通过一个工具来获取一个文件的内容",
+            "goal": "I want to use a tool to get the contents of a file",
             "auth_token": "Bearer test_valid_token_888" 
         })
     }

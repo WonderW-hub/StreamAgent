@@ -10,7 +10,7 @@ _session_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("session_i
 _auth_token_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("auth_token", default=None)
 _user_id_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("user_id", default=None)
 _is_shadow_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar("is_shadow", default=False)
-
+_source_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("source", default="")
 
 class SessionContext:
     """
@@ -36,6 +36,7 @@ class SessionContext:
         t_auth = _auth_token_ctx.set(envelope.auth_token)
         t_user = _user_id_ctx.set(envelope.user_id)
         t_shadow = _is_shadow_ctx.set(envelope.is_shadow)
+        t_source = _source_ctx.set(envelope.source)
 
         try:
 
@@ -46,6 +47,7 @@ class SessionContext:
             _auth_token_ctx.reset(t_auth)
             _user_id_ctx.reset(t_user)
             _is_shadow_ctx.reset(t_shadow)
+            _source_ctx.reset(t_source)
 
     # ==========================================
     # 2. Security access interfaces (Getters) exposed to developers
@@ -78,3 +80,7 @@ class SessionContext:
     def is_shadow_mode(cls) -> bool:
 
         return _is_shadow_ctx.get()
+
+    @classmethod
+    def get_source(cls) -> str:
+        return _source_ctx.get()

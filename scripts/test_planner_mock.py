@@ -16,7 +16,7 @@ async def inject_test_task():
         "source": "gateway",
         "target": "planner_agent",
         "payload": json.dumps({
-            "goal": "Analyze last night's sleep waveform data.First, obtain the CPAP air leakage warning threshold of the current equipment; then, write a piece of C++ code to integrate the filtering logic into oscar_bridge; and finally output an evaluation report based on the filtered data.",
+            "goal": "我想要通过一个工具来获取一个文件的内容",
             "auth_token": "Bearer test_valid_token_888" 
         })
     }

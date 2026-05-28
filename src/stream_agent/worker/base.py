@@ -1,6 +1,7 @@
 # src/stream_agent/worker/base.py
 """Developer inheritance core class WorkerBase (with automatic ACK)"""
 import asyncio
+import json
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
@@ -99,7 +100,7 @@ class WorkerBase(ABC):
                         await self._process_raw_message(message_id, msg_data)
 
         except asyncio.CancelledError:
-            logger.info(f"[{self.agent_name}]Received a shutdown signal and is exiting safely...")
+            logger.info(f"[{self.agent_name}] Received a shutdown signal and is exiting safely...")
         finally:
             if self.redis:
                 await self.redis.aclose()
@@ -123,8 +124,65 @@ class WorkerBase(ABC):
             logger.info(f"[{self.agent_name}] 已成功从注册中心注销 👋")
         except Exception as e:
             logger.error(f"[{self.agent_name}] 注销时发生异常: {e}")
+
+    async def _advance_pipeline(self, pipeline_key: str, session_id: str, trace_id: str, step_result: str, auth_token: str):
+        """
+        【全局通用】推进任务状态机，自动将当前结果作为上下文传给下一个 Agent
+        """
+        pipeline_data = await self.redis.hgetall(pipeline_key)
+        if not pipeline_data:
+            return
+            
+        current_step = int(pipeline_data.get("current_step", 1))
+        total_steps = int(pipeline_data.get("total_steps", 1))
+        tasks = json.loads(pipeline_data.get("tasks", "[]"))
+        
+        if current_step < total_steps:
+            next_step = current_step + 1
+            next_task = next((t for t in tasks if t["step_id"] == next_step), None)
+            
+            if not next_task:
+                logger.error(f"[Trace: {trace_id}] can not find {next_step} mision data。")
+                return
+
+            await self.redis.hset(pipeline_key, "current_step", next_step)
+            
+            envelope_data = {
+                "trace_id": trace_id,
+                "session_id": session_id,
+                "auth_token": auth_token,
+                "source": self.agent_name,
+                "target": next_task["agent_type"],
+                "payload": json.dumps({
+                    "instruction": next_task["instruction"],
+                    "previous_context": step_result, 
+                    "step_id": next_task["step_id"],
+                    "pipeline_id": pipeline_key,
+                    "auth_token": auth_token 
+                })
+            }
+            
+            stream_name = f"bus:events:{next_task['agent_type']}"
+            await self.redis.xadd(stream_name, envelope_data)
+            logger.info(f"[Trace: {trace_id}] auto active next (Step {next_step}) -> {stream_name}")
+        else:
+            await self.redis.hset(pipeline_key, "status", "SUCCESS")
+            logger.info(f"[Trace: {trace_id}] 🎉 Pipeline excuted completed")      
+            reply_envelope = EventEnvelope(
+                trace_id=trace_id,
+                session_id=session_id,
+                source=self.agent_name, 
+                target="gateway",  
+                payload={
+                    "status": "success", 
+                    "final_article": step_result 
+                },
+                is_shadow=False
+            )
+            await self.redis.xadd("bus:events:gateway", reply_envelope.to_redis_dict())
+
     async def _process_raw_message(self, message_id: str, msg_data: Dict[str, str]):
-        """Core processing pipeline: unpacking -> authentication -> execution -> reply -> ACK"""
+        """Core processing pipeline: unpacking -> authentication -> execution -> reply -> pipeline advance -> ACK"""
         try:
             # 1. Protocol deserialization
             envelope = EventEnvelope.from_redis_dict(msg_data)
@@ -149,6 +207,24 @@ class WorkerBase(ABC):
                 # 4. The logic of returning control to the business developer to rewrite
                 result_payload = await self.handle_event(envelope.payload)
                 
+                # ================= 新增：自动推进状态机逻辑 =================
+                if result_payload:
+                    pipeline_id = envelope.payload.get("pipeline_id")
+                    if pipeline_id and result_payload.get("status") != "error":
+                        step_result = result_payload.get("result", str(result_payload))
+                        auth_token = envelope.payload.get("auth_token", "") 
+                        
+                        await self._advance_pipeline(
+                            pipeline_key=pipeline_id,
+                            session_id=envelope.session_id,
+                            trace_id=envelope.trace_id,
+                            step_result=step_result,
+                            auth_token=auth_token
+                        )
+                    else:
+                        await self._route_reply(envelope, result_payload)
+                # ==========================================================
+
                 # 5. Assemble results and route them back
                 if result_payload:
                     await self._route_reply(envelope, result_payload)

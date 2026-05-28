@@ -1,3 +1,4 @@
+# example.py
 import asyncio
 import time
 import uvicorn
@@ -17,6 +18,7 @@ from stream_agent.orchestrator.router import LLMIntentRouter
 from stream_agent.utils.llm_engine import AsyncLLMEngine
 from stream_agent.config.settings import settings
 from stream_agent.worker.sandbox import CodeSandbox
+from stream_agent.agents.planner import PlannerAgent
 import logging
 
 logging.basicConfig(
@@ -112,8 +114,12 @@ class CoderAgent(WorkerBase):
     async def handle_event(self, payload: dict) -> dict:
         session_id = SessionContext.get_session_id()
         trace_id = SessionContext.get_trace_id()
-        query = payload.get("query", "")
-
+        instruction = payload.get("instruction") or payload.get("query", "")
+        previous_context = payload.get("previous_context", "")
+        
+        query = instruction
+        if previous_context:
+            query += f"\n\n【Contextual information from the previous step】：\n{previous_context}"
         history = await self.memory.get_history(session_id)
 
         system_prompt = (
@@ -121,6 +127,7 @@ class CoderAgent(WorkerBase):
             "【Rules】\n"
             "Only output Python code, and Try not to include explanatory text.\n"
             "Be sure to use print() to print out the result, otherwise the sandbox cannot capture the result。"
+            "Extremely important: when performing any file read and write operations, you must explicitly specify the encoding='set-8' parameter in the open() function!"
         )
         messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": query}]
 
@@ -150,7 +157,8 @@ class CoderAgent(WorkerBase):
         return {
             "summary": reply_summary, 
             "agent": self.agent_name,
-            "code": clean_code
+            "code": clean_code,
+            "result": execution_result
         }
 
     def _clean_markdown(self, text: str) -> str:
@@ -184,7 +192,12 @@ class WriterAgent(WorkerBase):
     async def handle_event(self, payload: dict) -> dict:
         session_id = SessionContext.get_session_id()
         trace_id = SessionContext.get_trace_id() 
-        query = payload.get("query", "")
+        instruction = payload.get("instruction") or payload.get("query", "")
+        previous_context = payload.get("previous_context", "")
+        
+        query = instruction
+        if previous_context:
+            query += f"\n\n【Please be sure to copywriter based on the content provided below】：\n{previous_context}"
         
         logging.info(f"[{self.agent_name}] Received copywriting task，TraceID: {trace_id}")
 
@@ -226,6 +239,11 @@ class TaskDispatcherAgent(Supervisor):
         self.register_agent("coder", "Call when you need to write code, execute scripts, and fix bugs")
         self.register_agent("writer", "Call when you need to write articles, come up with headlines, and polish text")
 
+        self.register_agent(
+            "planner_agent", 
+            "【高级调度】当用户的需求是一个包含多个步骤的复杂目标，需要多个Agent接力协作才能完成时（例如：先获取文件内容，然后根据内容写文章；或者先查资料再写代码），必须将任务转发给该 Agent 进行流水线规划。"
+        )
+
 # ==========================================
 # Assemble the startup gateway
 # ==========================================
@@ -249,7 +267,8 @@ async def main():
         TaskDispatcherAgent().start(),
         ResearcherAgent().start(),
         CoderAgent().start(),
-        WriterAgent().start()
+        WriterAgent().start(),
+        PlannerAgent().start(),
     )
 
 if __name__ == "__main__":

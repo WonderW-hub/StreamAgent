@@ -27,7 +27,7 @@ class PlannerAgent(WorkerBase):
             active_members = await self.redis.smembers("system:active_agents")
             if active_members:
                 # Redis returns bytes, which needs to be decrypted
-                agents = [m.decode('utf-8') for m in active_members]
+                agents = [str(m) for m in active_members]
             else:
                 # The bottom mechanism assumes that at least these two basic support agents exist.
                 agents = ["coder_agent", "sandbox_agent"] 
@@ -42,7 +42,7 @@ class PlannerAgent(WorkerBase):
         session_id = SessionContext.get_session_id()
         trace_id = SessionContext.get_trace_id()
         
-        user_goal = payload.get("goal", "")
+        user_goal = payload.get("query", "")
         auth_token = payload.get("auth_token")
 
         if not user_goal:
@@ -94,11 +94,11 @@ class PlannerAgent(WorkerBase):
         first_task = tasks[0]
         await self.dispatch_step(first_task, session_id, trace_id, auth_token, pipeline_key)
 
-        return {
-            "status": "planning_completed", 
-            "total_steps": len(tasks), 
-            "pipeline_id": pipeline_key
-        }
+        # ===================================================================
+        # 【核心修改】直接返回 None，阻止 WorkerBase 向 Gateway 发送提前结束的 ACK 回执。
+        # 真正的最终结果将由最后一棒（比如 WriterAgent）触发 _advance_pipeline 里的回传逻辑来完成。
+        # ===================================================================
+        return None
 
     def _validate_token(self, token: str) -> bool:
         if not token:

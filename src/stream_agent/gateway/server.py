@@ -116,10 +116,19 @@ class GatewayServer:
         """Dynamically mount the routing system (the route must be wrapped in the method body to access self)"""
 
         @self.app.post("/v1/chat")
-        async def chat_endpoint(request: ChatRequest, session_id: str = Header(..., description="Request header authorization session ID")):
+        async def chat_endpoint(
+            request: ChatRequest, 
+            session_id: str = Header(..., description="Request header authorization session ID"),
+            # 1. 【新增】拦截 Authorization 请求头
+            authorization: str = Header(default=None, description="Bearer Token for auth") 
+        ):
             return await self.dispatch_and_wait(
                 target_agent="dispatcher", 
-                payload={"query": request.query},
+                payload={
+                    "query": request.query,
+                    # 2. 【新增】将拦截到的 token 塞进 payload 透传给下游的 Agent
+                    "auth_token": authorization 
+                },
                 session_id=session_id,
                 timeout=60.0
             )

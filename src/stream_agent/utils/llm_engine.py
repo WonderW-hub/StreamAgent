@@ -92,6 +92,28 @@ class AsyncLLMEngine:
             except Exception as e:
                 logger.error(f"LLM JSON Generation Exception: {str(e)}")
                 raise
+
+        async def chat_with_tools(
+            self, 
+            messages: List[Dict[str, Any]], 
+            tools: List[Dict[str, Any]], 
+            temperature: float = 0.1
+        ) -> Any:
+            """
+            支持原生 Tool Calling 的交互接口（返回完整的 message 对象，包含 tool_calls 详情）
+            """
+            try:
+                response = await self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    temperature=temperature,
+                    tools=tools,
+                    tool_choice="auto"  # 让大模型自主决定是否需要调用工具
+                )
+                return response.choices[0].message
+            except Exception as e:
+                logger.error(f"LLM 工具调用生成失败: {str(e)}")
+                raise
         
     async def generate_stream_to_pubsub(
         self, 

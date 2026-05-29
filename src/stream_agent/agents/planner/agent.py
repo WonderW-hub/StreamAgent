@@ -74,8 +74,8 @@ class PlannerAgent(WorkerBase):
         if not tasks:
             tasks = [{
                 "step_id": 1, 
-                "agent_type": "coder_agent", 
-                "instruction": f"The system planning failed, please complete the goal as a stand-in for the bottom of the pocket: {user_goal}"
+                "agent_type": "chat_agent", 
+                "instruction": user_goal
             }]
 
         # 4. State machine persistence

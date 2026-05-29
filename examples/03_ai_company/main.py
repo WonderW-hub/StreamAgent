@@ -21,6 +21,7 @@ from stream_agent.worker.sandbox import CodeSandbox
 from stream_agent.agents.planner import PlannerAgent
 from stream_agent.agents.writer import WriterAgent
 from stream_agent.agents.coder import CoderAgent
+from stream_agent.agents.chat import ChatAgent
 import logging
 
 logging.basicConfig(
@@ -116,6 +117,7 @@ class TaskDispatcherAgent(Supervisor):
             "planner_agent", 
             "[Advanced scheduling] When the user's needs are a complex goal that contains multiple steps, and multiple agents are required to collaborate to complete it (for example: first obtain the content of the file, and then write an article based on the content; or check the information first and then write the code), the task must be forwarded to the agent for pipeline planning.。"
         )
+        self.register_agent("chat_agent",'Kindly answer users daily small talk, common sense questions or general inquiries.')
 
 # ==========================================
 # Assemble the startup gateway
@@ -142,6 +144,7 @@ async def main():
         CoderAgent().start(),
         WriterAgent().start(),
         PlannerAgent().start(),
+        ChatAgent().start(),
     )
 
 if __name__ == "__main__":

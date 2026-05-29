@@ -27,7 +27,7 @@ class CoderAgent(WorkerBase):
     def __init__(self):
         super().__init__(agent_name="coder")  
         self.memory = ZeroHistoryPlugin()
-        self.sandbox = CodeSandbox(pool_size=3) 
+        self.sandbox = CodeSandbox(pool_size=1) 
         self.llm = AsyncLLMEngine()
 
     async def setup(self):

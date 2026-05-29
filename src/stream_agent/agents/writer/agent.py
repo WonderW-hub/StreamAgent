@@ -1,5 +1,6 @@
 # \src\stream_agent\agents\writer\agent.py
 from stream_agent.memory.layered import LayeredMemoryManager
+from stream_agent.memory.summarized_memory import SummarizedMemoryManager
 from stream_agent.memory.sqlite_plugin import SQLiteMemoryPlugin
 from stream_agent.memory.redis_plugin import RedisMemoryPlugin
 from stream_agent.memory.base import ZeroHistoryPlugin
@@ -12,14 +13,23 @@ import logging
 class WriterAgent(WorkerBase):
     def __init__(self):
         super().__init__(agent_name="writer")
-        self.memory = LayeredMemoryManager(
+        self.memory = SummarizedMemoryManager(
             agent_name=self.agent_name, 
-            l1_max_len=10
+            l1_max_len=10,
+            redis_url=self.redis_url
         ) 
         self.llm = AsyncLLMEngine()
 
+
     async def handle_event(self, payload: dict) -> dict:
         session_id = SessionContext.get_session_id()
+        # 1. 显式读取压缩后的记忆摘要
+        memory_summary = await self.memory.query_memory_summary(session_id)
+        
+        # 2. 打印到控制台/日志
+        logging.info(f"========== 🧠 WriterAgent 记忆摘要 (Session: {session_id}) ==========")
+        logging.info(memory_summary)
+        logging.info("=====================================================================")
         trace_id = SessionContext.get_trace_id() 
         instruction = payload.get("instruction") or payload.get("query", "")
         previous_context = payload.get("previous_context", "")

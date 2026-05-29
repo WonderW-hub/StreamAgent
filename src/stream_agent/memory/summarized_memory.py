@@ -12,9 +12,9 @@ logger = logging.getLogger("StreamAgent.SummarizedMemory")
 
 class SummarizedMemoryManager(LayeredMemoryManager):
     """
-    带有异步自动摘要功能的分层记忆管理器。
-    当 L1 (Redis) 缓存达到阈值时，自动触发后台 LLM 摘要任务，
-    将旧消息压缩，同时严格保持 Session ID 级别的隔离。
+    A hierarchical memory manager with asynchronous automatic summary function.
+    When the L1 (Redis) cache reaches the threshold value, the background LLM summary task is automatically triggered，
+    Compress old messages while strictly maintaining Session ID-level isolation.
     """
     def __init__(
         self, 
@@ -22,8 +22,8 @@ class SummarizedMemoryManager(LayeredMemoryManager):
         redis_url: str = "redis://localhost:6379/0",
         l1_max_len: int = 10,
         l2_plugin: Optional[BaseMemory] = None,
-        compress_ratio: float = 0.8,  # 当记录达到最大长度的 80% 时触发压缩
-        retain_ratio: float = 0.4,    # 压缩后，保留最新的 40% 鲜活记忆不被压缩
+        compress_ratio: float = 0.8,  # Compression is triggered when the record reaches 80% of the maximum length
+        retain_ratio: float = 0.4,    # After compression, keep the latest 40% of the living memory is not compressed
     ):
         super().__init__(agent_name, redis_url, l1_max_len, l2_plugin)
         self.l1_max_len = l1_max_len
@@ -32,7 +32,7 @@ class SummarizedMemoryManager(LayeredMemoryManager):
         
         self.llm = AsyncLLMEngine()
         self._summarize_locks: Dict[str, asyncio.Lock] = {}
-        # 强引用集合，防止 asyncio 后台任务被垃圾回收
+        # Strongly reference collections to prevent asynchronous background tasks from being garbage collected
         self._background_tasks = set()
 
     def _get_session_lock(self, session_id: str) -> asyncio.Lock:
@@ -42,36 +42,36 @@ class SummarizedMemoryManager(LayeredMemoryManager):
 
     async def get_history(self, session_id: str, limit: int = 10) -> List[Dict[str, str]]:
         """
-        获取历史记录，并自动在最前方注入最新的记忆摘要。
+        Get historical records and automatically inject the latest memory summary at the front。
         """
-        # 1. 获取常规的分层历史记录（优先 L1，未命中穿透 L2）
+        # 1. Get regular hierarchical history (priority L1, missed penetration L2)
         raw_history = await super().get_history(session_id, limit)
         
-        # 2. 从 Redis 获取该 session 专属的持久化摘要
+        # 2. Get the session-specific persistence summary from Redis
         summary_key = f"memory:summary:{session_id}"
         current_summary = await self.l1_cache.redis.get(summary_key)
         
-        # 3. 动态拼接：如果存在摘要，将其作为 System Prompt 的补充注入
+        # 3. Dynamic stitching: If there is a summary, inject it as a supplement to System Prompt
         if current_summary:
             summary_message = {
                 "role": "system",
-                "content": f"【历史记忆摘要】：\n{current_summary}\n请结合上述摘要理解用户的后续请求。"
+                "content": f"【Summary of Historical Memory】:\n{current_summary}\nPlease combine the above summary to understand the user's follow-up request。"
             }
-            # 将摘要插入到历史记录的最前面
+            # Insert the summary to the front of the history
             raw_history.insert(0, summary_message)
-            logger.debug(f"[Memory] 注入历史记忆摘要，Session: {session_id}")
+            logger.debug(f"[Memory] Summary of Injecting Historical Memory,Session: {session_id}")
             
         return raw_history
 
     async def save_message(self, session_id: str, role: str, content: str) -> None:
         """
-        保存消息，并在满足比例条件时旁路触发异步摘要任务，绝不阻塞主线程。
+        Save the message and bypass the asynchronous summary task when the proportional conditions are met, never blocking the main thread.
         """
         await super().save_message(session_id, role, content)
         
         history = await self.l1_cache.get_history(session_id, limit=self.l1_max_len)
         
-        # 动态计算触发阈值 (向下取整，至少为 1)
+        # Dynamically calculate the trigger threshold (rounded down, at least 1)
         trigger_threshold = max(1, int(self.l1_max_len * self.compress_ratio))
         
         if len(history) >= trigger_threshold:
@@ -89,30 +89,30 @@ class SummarizedMemoryManager(LayeredMemoryManager):
                 summary_key = f"memory:summary:{session_id}"
                 old_summary = await self.l1_cache.redis.get(summary_key) or "无"
                 
-                # 动态计算需要保留在 L1 缓存中的最新消息数
+                # Dynamically calculate the number of latest messages that need to be kept in the L1 cache
                 retain_count = max(1, int(self.l1_max_len * self.retain_ratio))
                 
-                # 提取需要被压缩的最早期对话（排除掉需要保留的最新的 retain_count 条）
+                # Extract the earliest conversations that need to be compressed (exclude the latest retain_data that needs to be retained)
                 messages_to_compress = history[:-retain_count]
                 if not messages_to_compress:
                     return
 
                 history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages_to_compress])
                 
-                prompt = f"""你是一个专业的记忆压缩引擎。请结合【旧的记忆摘要】和【新增的对话记录】，提炼出一个全面、简练的【新记忆摘要】。
-要求：
-1. 包含用户的核心偏好、已完成的关键任务状态。
-2. 剔除无效的寒暄。
-3. 严格输出纯文本摘要，不要有任何多余的解释。
+                prompt = f"""You are a professional memory compression engine.Please combine [Old Memory Summary] and [New Dialogue Record] to extract a comprehensive and concise [New Memory Summary].
+requirements：
+1. Contains the user's core preferences and the status of key tasks that have been completed.
+2. Eliminate invalid greetings.
+3. Strictly output a plain text summary, without any superfluous explanations.
 
-【旧的记忆摘要】：
+【Summary of Old Memories】：
 {old_summary}
 
-【新增的对话记录】：
+【New conversation record】：
 {history_text}
 """
                 messages = [{"role": "user", "content": prompt}]
-                logger.info(f"[Memory] 启动旁路记忆压缩任务 (动态阈值)，Session: {session_id} ...")
+                logger.info(f"[Memory] Start the bypass memory compression task (dynamic threshold),Session: {session_id} ...")
                 
                 new_summary = await self.llm.generate_text(
                     messages=messages, 
@@ -122,31 +122,31 @@ class SummarizedMemoryManager(LayeredMemoryManager):
                 
                 await self.l1_cache.redis.set(summary_key, new_summary, ex=2592000)
                 
-                # 动态修剪 L1 缓存，只保留最新的 retain_count 条记录
+                # Dynamically trim the L1 cache, keeping only the latest retain_data records
                 key = self.l1_cache._get_key(session_id)
                 await self.l1_cache.redis.ltrim(key, -retain_count, -1)
                 
-                logger.info(f"[Memory] ✅ 记忆压缩完成并更新 L1 滑动窗口 (保留最新 {retain_count} 条)，Session: {session_id}")
+                logger.info(f"[Memory] ✅ The memory compression is completed and the L1 sliding window is updated (keep the latest {retain_data} ),Session: {session_id}")
                 
             except Exception as e:
-                logger.error(f"[Memory] ❌ 异步记忆压缩失败，Session: {session_id} - Error: {str(e)}", exc_info=True)
+                logger.error(f"[Memory] ❌ Asynchronous memory compression failed,Session: {session_id} - Error: {str(e)}", exc_info=True)
         
     async def query_memory_summary(self, session_id: str) -> str:
         """
-        显式查询接口：允许 Agent 或前端直接调取当前会话的压缩记忆现状
+        Explicit query interface: allows the agent or front-end to directly retrieve the compressed memory status quo of the current session
         """
         summary_key = f"memory:summary:{session_id}"
         current_summary = await self.l1_cache.redis.get(summary_key)
         
         if not current_summary:
-            # 如果 Redis 抖动导致摘要丢失，从 L2 冷存储中提取最近记录临时生成或返回提示
-            return "当前会话暂无长期记忆摘要。"
+            # If Redis jitter causes the summary to be lost, extract the most recent records from the L2 cold storage to temporarily generate or return a prompt
+            return "There is no long-term memory summary of the current session."
             
         return current_summary
 
     async def clear(self, session_id: str) -> None:
         """
-        物理销毁双层存储以及摘要记录，确保数据隐私擦除。
+        Physically destroy two-layer storage and summary records to ensure data privacy and erasure.
         """
         await super().clear(session_id)
         summary_key = f"memory:summary:{session_id}"
@@ -155,4 +155,4 @@ class SummarizedMemoryManager(LayeredMemoryManager):
         # 清理内存锁
         if session_id in self._summarize_locks:
             del self._summarize_locks[session_id]
-        logger.info(f"[Memory] 🗑️ 会话 {session_id} 的记忆摘要已被完全擦除。")
+        logger.info(f"[Memory] 🗑️ The memory summary of the session {session_id} has been completely erased.")

@@ -17,6 +17,7 @@ from stream_agent.services.tts_service import TTSService
 from pydantic import BaseModel
 from stream_agent.config.settings import settings
 from stream_agent.worker.sandbox import CodeSandbox
+from fastapi.responses import StreamingResponse
 
 class ChatRequest(BaseModel):
     query: str
@@ -138,6 +139,69 @@ class GatewayServer:
                 timeout=60.0
             )
 
+        @self.app.post("/v1/sse/chat")
+        async def sse_chat_endpoint(
+            request: ChatRequest,
+            session_id: str = Header(..., description="用户唯一会话ID"),
+            authorization: Optional[str] = Header(default=None, description="鉴权Token")
+        ):
+            """
+            SSE (Server-Sent Events) 单向文本流式接口
+            适合前端打字机效果，通过 HTTP 长连接单向推送大模型生成的 Token
+            """
+            # 1. 生成本次请求的唯一 Trace ID 和 Redis 订阅频道
+            trace_id = f"req-sse-{uuid.uuid4().hex[:8]}"
+            pubsub_channel = f"channel:stream:{trace_id}"
+            
+            # 2. 构造投递给后端的信封
+            envelope = EventEnvelope(
+                trace_id=trace_id, 
+                session_id=session_id,
+                auth_token=authorization, 
+                source=self.source_name, 
+                target="dispatcher",
+                action="process", 
+                payload={"query": request.query}
+            )
+
+            # 3. 定义 SSE 异步生成器
+            async def event_generator():
+                pubsub = self.redis.pubsub()
+                try:
+                    # 先订阅，防止遗漏第一个 Token
+                    await pubsub.subscribe(pubsub_channel)
+                    
+                    # 订阅成功后，再将任务投递给后端 Agent 队列
+                    await self.redis.xadd("bus:events:dispatcher", envelope.to_redis_dict())
+                    logger.info(f"💬 [SSE] [{session_id}] 任务已投递，开始监听频道: {pubsub_channel}")
+
+                    # 循环监听 Redis Pub/Sub
+                    async for message in pubsub.listen():
+                        if message["type"] == "message":
+                            token = message["data"]
+                            
+                            if token == "[DONE]":
+                                # 结束标志
+                                yield "data: [DONE]\n\n"
+                                break
+                            
+                            # 将 token 封装成 JSON 字符串，防止换行符破坏 SSE 的 data 格式规范
+                            chunk_data = json.dumps({"content": token}, ensure_ascii=False)
+                            yield f"data: {chunk_data}\n\n"
+                            
+                except asyncio.CancelledError:
+                    # 当客户端（如浏览器）主动断开连接时触发
+                    logger.warning(f"[SSE] [{session_id}] 客户端主动断开了流式连接。")
+                except Exception as e:
+                    logger.error(f"🚨 [SSE] 发生异常: {str(e)}", exc_info=True)
+                    error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
+                    yield f"data: {error_data}\n\n"
+                finally:
+                    # 无论正常结束还是异常断开，务必清理 Redis 订阅
+                    await pubsub.unsubscribe(pubsub_channel)
+
+            # 4. 返回流式响应，指定 media_type 为 text/event-stream
+            return StreamingResponse(event_generator(), media_type="text/event-stream")
         @self.app.websocket("/v1/ws/chat")
         async def websocket_chat(
             websocket: WebSocket,

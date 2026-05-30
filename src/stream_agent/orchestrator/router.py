@@ -23,7 +23,7 @@ class LLMIntentRouter:
 
         self.llm = llm_engine
 
-    def _build_system_prompt(self, routes: List[AgentRoute]) -> str:
+    def _build_system_prompt(self, routes: List[AgentRoute], fallback_agent: str) -> str:
         route_descriptions = "\n".join([f"- {r.name}: {r.description}" for r in routes])
         
         return f"""You are a central triage desk in a multi-agent system.
@@ -34,7 +34,7 @@ Your task is to allocate user inputs to the most suitable expert agents.
 
 【Rules】
 1. You can only choose one most matching agent name from the above list.
-2. If no agent matches, please output "supervisor".
+2. If no agent matches, please output "{fallback_agent}".
 3. Your output must be a valid JSON object with the following format:
 {{
     "target_agent": "Selected agent name",
@@ -52,7 +52,7 @@ Never output anything other than the JSON object (do not include markdown tags).
             return fallback_agent, "User input is empty"
 
 
-        system_prompt = self._build_system_prompt(routes)
+        system_prompt = self._build_system_prompt(routes,fallback_agent)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": query}

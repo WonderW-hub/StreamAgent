@@ -70,10 +70,12 @@ class CoderAgent(WorkerBase):
             messages=messages,
             trace_id=trace_id,       
             redis_client=self.redis, 
+            send_done=False,
         )
       
         clean_code = self._clean_markdown(generated_code)
         logging.info(f"[{self.agent_name}] Code generation complete,Put into the EVU sandbox for execution...")
+        pubsub_channel = f"channel:stream:{trace_id}"
         
         # 🟢When the sandbox is called, the Redis client, the current Trace ID, and whether the end point is notified to the sandbox engine
         is_success, execution_result = await self.sandbox.execute(
@@ -81,16 +83,21 @@ class CoderAgent(WorkerBase):
             redis_client=self.redis,
             trace_id=trace_id,
             is_final_step=is_final_step,
-            files_to_mount=files_to_mount
+            files_to_mount=files_to_mount,
+            session_id=session_id
         )
         
         if is_success:
             reply_summary = f"✅ The code was executed successfully!\n sandbox output:\n{execution_result}"
             logging.info(f"[{self.agent_name}] The execution was successful!output: {execution_result}")
+            frontend_result = f"\n**✅ Execution result：**\n```text\n{execution_result}\n```\n"
         else:
             reply_summary = f"❌ The code execution failed!\nError tracking:\n{execution_result}"
             logging.error(f"[{self.agent_name}] Execution error: {execution_result}")
+            frontend_result = f"\n**❌ Execution result：**\n```text\n{execution_result}\n```\n"
 
+        await self.redis.publish(pubsub_channel, frontend_result)
+        await self.redis.publish(pubsub_channel, "[DONE]")
         await self.memory.save_message(session_id, "user", query)
         await self.memory.save_message(session_id, "assistant", f"```python\n{clean_code}\n```\n{reply_summary}")
         

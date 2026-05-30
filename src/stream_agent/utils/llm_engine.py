@@ -5,6 +5,7 @@ import asyncio
 from typing import Dict, Any, Optional, List
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
+from stream_agent.config.settings import settings
 
 logger = logging.getLogger("StreamAgent.LLMEngine")
 
@@ -20,9 +21,12 @@ class AsyncLLMEngine:
         model_name: Optional[str] = None,
         timeout: float = 15.0
     ):
-        self.api_key = api_key or os.getenv("STREAM_AGENT_API_KEY", "EMPTY")
-        self.base_url = base_url or os.getenv("STREAM_AGENT_BASE_URL", "http://192.168.9.133:8001/v1")
-        self.model_name = model_name or os.getenv("STREAM_AGENT_MODEL", "Qwen2.5-7B-Instruct")
+        # self.api_key = api_key or os.getenv("STREAM_AGENT_API_KEY", "EMPTY")
+        # self.base_url = base_url or os.getenv("STREAM_AGENT_BASE_URL", "http://192.168.9.133:8001/v1")
+        # self.model_name = model_name or os.getenv("STREAM_AGENT_MODEL", "Qwen2.5-7B-Instruct")
+        self.api_key = api_key or settings.STREAM_AGENT_API_KEY
+        self.base_url = base_url or settings.STREAM_AGENT_BASE_URL
+        self.model_name = model_name or settings.STREAM_AGENT_MODEL
         self.timeout = timeout
         
         self.client = AsyncOpenAI(
@@ -121,7 +125,8 @@ class AsyncLLMEngine:
         trace_id: str,
         redis_client: Any, 
         temperature: float = 0.7,
-        max_tokens: int = 1024
+        max_tokens: int = 1024,
+        send_done: bool = True
     ) -> str:
         """
         Streaming generation interface (Streaming).
@@ -147,11 +152,13 @@ class AsyncLLMEngine:
                     full_content += token
                     await redis_client.publish(pubsub_channel, token)
             
-            await redis_client.publish(pubsub_channel, "[DONE]")
+            if send_done:
+                await redis_client.publish(pubsub_channel, "[DONE]")
             return full_content
             
         except Exception as e:
             logger.error(f"LLM Streaming Generation Failed: {str(e)}")
             await redis_client.publish(pubsub_channel, f"[ERROR] Generation Interrupted: {str(e)}")
-            await redis_client.publish(pubsub_channel, "[DONE]")
+            if send_done:
+                await redis_client.publish(pubsub_channel, "[DONE]")
             raise

@@ -105,7 +105,7 @@ class GatewayServer:
                             envelope = EventEnvelope.from_redis_dict(msg_data)
                             
                             # If it is the end receipt of the WebSocket, ACK directly, no need to wake up future.
-                            if envelope.trace_id.startswith("req-ws-"):
+                            if envelope.trace_id.startswith("req-ws-") or envelope.trace_id.startswith("req-sse-"):
                                 logger.debug(f"[Gateway] Received streaming task {envelope.trace_id}: Underlying end signal recovered.")
                                 await self.redis.xack(self.return_stream, self.gateway_group, msg_id)
                                 continue
@@ -173,7 +173,7 @@ class GatewayServer:
                     
                     # After the subscription is successful, the task will be delivered to the backend agent queue
                     await self.redis.xadd("bus:events:dispatcher", envelope.to_redis_dict())
-                    logger.info(f"💬 [SSE] [{session_id}] 任务已投递，开始监听频道: {pubsub_channel}")
+                    logger.info(f"💬 [SSE] [{session_id}] The task has been delivered, start listening to the channel: {pubsub_channel}")
 
                     # Loop monitoring Redis Pub/Sub
                     async for message in pubsub.listen():

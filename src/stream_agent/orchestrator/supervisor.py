@@ -41,13 +41,22 @@ class Supervisor(WorkerBase):
         return target
 
     async def handle_event(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-
         target_agent = await self.determine_target(payload)
         
-        if target_agent == self.agent_name or not target_agent:
-            return {"summary": "Sorry, the triage desk currently cannot understand and dispatch your request."}
-
+        # Advance the acquisition of trace_id
         trace_id = SessionContext.get_trace_id()
+        
+        if target_agent == self.agent_name or not target_agent:
+            error_msg = "Sorry, the triage desk is currently unable to understand and schedule your request, please provide clearer instructions (for example: please help me write a piece of code, please help me write an article)。"
+            
+            # [New] For streaming requests (SSE/WS), you must actively push text and end signals through Pub/Sub
+            if trace_id.startswith("req-ws-") or trace_id.startswith("req-sse-"):
+                pubsub_channel = f"channel:stream:{trace_id}"
+                await self.redis.publish(pubsub_channel, error_msg)
+                await self.redis.publish(pubsub_channel, "[DONE]")
+                
+            return {"summary": error_msg}
+
         forward_envelope = EventEnvelope(
             trace_id=trace_id,
             session_id=SessionContext.get_session_id(),

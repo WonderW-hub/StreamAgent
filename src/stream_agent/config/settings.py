@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_BASE_URL: Optional[str] = None
 
+    STREAM_AGENT_API_KEY: str = None
+    STREAM_AGENT_BASE_URL: str = None
+    STREAM_AGENT_MODEL: str = None
+
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -210,6 +210,24 @@ class GatewayServer:
                                     await self.redis.xadd("bus:events:dispatcher", envelope.to_redis_dict())
                                 except Exception as e:
                                     logger.error(f"🚨 Fatal error in task delivery to Redis: {e}")
+                            elif action == "stop_audio":
+                                if asr_session:
+                                    logger.info(f"🛑 [{session_id}] Stopping speech, waiting for ASR final result...")
+                                    text_result = await asr_session.finish()
+                                    asr_session = None
+                                    
+                                    if text_result:
+                                        logger.info(f"📝 [{session_id}] ASR completed: {text_result}")
+                                        envelope = EventEnvelope(
+                                            trace_id=trace_id, session_id=session_id,
+                                            auth_token=authorization, source=self.source_name, target="dispatcher",
+                                            action="process", payload={"query": text_result}
+                                        )
+                                        await self.redis.xadd("bus:events:dispatcher", envelope.to_redis_dict())
+                                    else:
+                                        # Fix: Send fallback text and [DONE] signal if ASR fails
+                                        await self.redis.publish(pubsub_channel, "⚠️ No speech detected or ASR API failed.")
+                                        await self.redis.publish(pubsub_channel, "[DONE]")
 
                         elif "bytes" in message:
                             if asr_session:
@@ -230,7 +248,8 @@ class GatewayServer:
                             token = message["data"]
                             try:
                                 if token == "[DONE]":
-                                    if sentence_buffer.strip() and enable_tts:
+                                    # ADD the isalnum() check to ensure there's speakable text
+                                    if sentence_buffer.strip() and enable_tts and any(c.isalnum() for c in sentence_buffer):
                                         await tts_queue.put(sentence_buffer.strip())
                                     await tts_queue.put(None) 
                                     break
@@ -247,7 +266,8 @@ class GatewayServer:
                                 sentence_to_speak = sentence_buffer.strip()
                                 sentence_buffer = ""
 
-                                if sentence_to_speak and enable_tts:
+                                # ADD the isalnum() check here as well
+                                if sentence_to_speak and enable_tts and any(c.isalnum() for c in sentence_to_speak):
                                     await tts_queue.put(sentence_to_speak)
                 except asyncio.CancelledError:
                     pass

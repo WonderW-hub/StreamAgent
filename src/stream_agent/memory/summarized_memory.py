@@ -126,7 +126,7 @@ requirements：
                 key = self.l1_cache._get_key(session_id)
                 await self.l1_cache.redis.ltrim(key, -retain_count, -1)
                 
-                logger.info(f"[Memory] ✅ The memory compression is completed and the L1 sliding window is updated (keep the latest {retain_data} ),Session: {session_id}")
+                logger.info(f"[Memory] ✅ The memory compression is completed and the L1 sliding window is updated (keep the latest {retain_count} ),Session: {session_id}")
                 
             except Exception as e:
                 logger.error(f"[Memory] ❌ Asynchronous memory compression failed,Session: {session_id} - Error: {str(e)}", exc_info=True)

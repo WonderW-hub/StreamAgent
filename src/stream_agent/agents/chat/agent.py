@@ -54,8 +54,10 @@ class ChatAgent(WorkerBase):
             messages.extend(history_messages)
             
             # 4. Call the big model engine to generate a reply, and adjust the temperature appropriately to make the chat appear more natural
-            response_text = await self.llm_engine.generate_text(
-                messages=messages, 
+            response_text = await self.llm_engine.generate_stream_to_pubsub(
+                messages=messages,
+                trace_id=trace_id,
+                redis_client=self.redis,
                 temperature=0.6 
             )
 

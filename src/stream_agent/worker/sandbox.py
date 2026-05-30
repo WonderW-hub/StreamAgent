@@ -135,12 +135,12 @@ class CodeSandbox:
         trace_id: str, 
         is_final_step: bool = True, 
         files_to_mount: Optional[Dict[str, str]] = None,
-        session_id: Optional[str] = None  # 【新增】支持传入 session_id
+        session_id: Optional[str] = None 
     ) -> Tuple[bool, str]:
         if not self._pool_started:
             await self.start()
 
-        # 【修改】如果传入了 session_id，则使用 session_id 作为缓存键，实现会话级复用
+   
         bind_id = session_id if session_id else trace_id
         sandbox_key = f"session_sandbox:{bind_id}"
         
@@ -151,14 +151,20 @@ class CodeSandbox:
 
         try:
             if sandbox_id:
-                logger.info(f"🔄 检测到会话缓存，正在重连至专属沙盒 [ID: {sandbox_id}]")
-                sandbox = await Sandbox.connect(sandbox_id, connection_config=self.config)
-                # 每次复用时，给沙盒续期 1 小时
-                await redis_client.expire(sandbox_key, 3600)
-            else:
-                logger.info("⚡ 请求分配热容器...")
+                logger.info(f"🔄 The session cache is detected and an attempt is being made to reconnect to the dedicated sandbox [ID: {sandbox_id}]")
+                try:
+                    sandbox = await Sandbox.connect(sandbox_id, connection_config=self.config)
+                    # The connection is successful and the renewal period is 1 hour
+                    await redis_client.expire(sandbox_key, 3600)
+                except Exception as e:
+                    logger.warning(f"⚠️ The sandbox that cannot be connected to the cache may have been recycled by the bottom of the system.Prepare to apply for a new sandbox... (Abnormal: {e})")
+                    sandbox = None 
+                    await redis_client.delete(sandbox_key) 
+
+            # If there is no sandbox_id, or the above connect fails and the sandbox is still None, then apply for a new sandbox
+            if not sandbox:
+                logger.info("⚡ Requesting allocation of a new hot container...")
                 
-                sandbox = None 
                 for attempt in range(60):
                     try:
                         sandbox = await self._pool.acquire(
@@ -169,17 +175,16 @@ class CodeSandbox:
                     except Exception as e:
                         if "idle buffer empty" in str(e) or "PoolEmptyException" in str(type(e)):
                             if attempt % 5 == 0:
-                                logger.info(f"⏳ 容器池排队中... ({attempt}s/60s)")
+                                logger.info(f"⏳ The container pool is排队... ({attempt}s/60s)")
                             await asyncio.sleep(1)
                         else:
                             raise e
 
                 if not sandbox:
-                    return False, "[Sandbox Timeout] 容器排队超时，请检查服务负载。"
+                    return False, "[Sandbox Timeout] The container pool is full, please check the service load."
 
-                # 将沙盒 ID 存入 Redis，过期时间设为 1 小时
                 await redis_client.set(sandbox_key, sandbox.id, ex=3600)
-                logger.info(f"🚀 成功借出沙盒 [ID: {sandbox.id}], 绑定至 Session: {bind_id}")
+                logger.info(f"🚀 Successfully acquired sandbox [ID: {sandbox.id}], bound to Session: {bind_id}")
 
             if files_to_mount:
                 write_entries = [
@@ -193,36 +198,35 @@ class CodeSandbox:
             
             if execution.error:
                 error_trace = f"[{execution.error.name}]: {execution.error.value}\n{execution.error.traceback}"
-                logger.error(f"❌ 代码执行失败: {execution.error.name}")
-                return False, f"[标准错误]:\n{error_trace}\n[标准输出]:\n{execution.text}"
+                logger.error(f"❌ Code execution failed: {execution.error.name}")
+                return False, f"[Standard Error]:\n{error_trace}\n[Standard Output]:\n{execution.text}"
             else:
-                output = execution.text if execution.text else "[无终端输出]"
-                logger.info("🎉 代码执行成功!")
+                output = execution.text if execution.text else "[No terminal output]"
+                logger.info("🎉 Code execution successful!")
                 execution_success = True
                 return True, output
 
         except Exception as e:
-            logger.error(f"🚨 OpenSandbox 基础设施异常: {e}", exc_info=True)
-            return False, f"[沙盒基础设施异常] {str(e)}"
+            logger.error(f"🚨 OpenSandbox Abnormal infrastructure: {e}", exc_info=True)
+            return False, f"[Abnormal sandbox infrastructure] {str(e)}"
 
         finally:
             if sandbox:
-                # 【修改】生命周期控制核心逻辑
+                # 【Modification】 Life cycle control core logic
                 if session_id:
-                    # 如果是基于 session 的沙盒，不要杀掉它，保留环境给下一轮对话使用
-                    logger.info(f"⏸️ 会话模式，沙盒 [ID: {sandbox.id}] 保持运行以供下次使用...")
+                    # If it is a session-based sandbox, don't kill it, and keep the environment for the next round of dialogue.
+                    logger.info(f"⏸️  Session mode, sandbox [ID: {sandbox.id}] will remain running for the next use...")
                     await sandbox.close() 
                 else:
-                    # 兼容老的 trace 模式（流水线结束后销毁）
                     if is_final_step or not execution_success:
-                        logger.info(f"🛑 任务结束或异常中断，彻底销毁沙盒 [ID: {sandbox.id}]...")
+                        logger.info(f"🛑  Task completed or interrupted,destroying sandbox [ID: {sandbox.id}]...")
                         try:
                             await sandbox.kill()
                             await redis_client.delete(sandbox_key)
                         except Exception as e:
-                            logger.warning(f"沙盒销毁发生警告: {e}")
+                            logger.warning(f"Warning of sandbox destruction: {e}")
                         finally:
                             await sandbox.close()
                     else:
-                        logger.info(f"⏸️ 流水线尚未结束，沙盒 [ID: {sandbox.id}] 保持运行...")
+                        logger.info(f"⏸️  Task not completed, sandbox [ID: {sandbox.id}] will remain running...")
                         await sandbox.close()
